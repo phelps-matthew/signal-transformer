@@ -147,12 +147,12 @@ class Transformer(nn.Module):
         )
         encoder.norm1 = nn.Identity()
         encoder.norm2 = nn.Identity()
-        # repeat base encoder block to form n layers
+        # repeat base encoder block to form n transformer layers
         self.transformer_layers = nn.ModuleList(
             [copy.deepcopy(encoder) for _ in range(layers)]
         )
 
-        # initialize learnable mask token as zeros
+        # initialize learnable mask token as gaussian distribution
         self.mask_replacement = nn.Parameter(
             torch.normal(0, in_features ** (-0.5), size=(in_features,)),
             requires_grad=True,
@@ -180,14 +180,14 @@ class Transformer(nn.Module):
         # batch size, num features, and sequence length
         N, C, L = x.shape
 
-        if True:
-            # if self.training and self.finetuning:
+        # apply masks specified in class args
+        if self.training and self.finetuning:
             if mask_t is None and self.p_t > 0:
                 mask_t = _make_mask((N, L), self.p_t, total=L, span=self.mask_t_span)
             if mask_c is None and self.p_c > 0:
                 mask_c = _make_mask((N, C), self.p_c, total=C, span=self.mask_c_span)
 
-        # given token mask, fill masked values with learnable masked token
+        # given token mask, fill masked sequence tokens with learnable masked token
         if mask_t is not None:
             x.transpose(2, 1)[mask_t] = self.mask_replacement
         # given channel mask, zero out channels
