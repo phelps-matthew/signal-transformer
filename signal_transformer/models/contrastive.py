@@ -8,8 +8,9 @@ import torch.nn.functional as F
 
 
 class ContrastiveSSL(nn.Module):
-    """Implements contrastive semi-supervised learning using a convencoder and a transformer.
-    Inspired by wav2vec 2.0 and BENDR.
+    """
+    Implements contrastive semi-supervised learning using a convencoder and a transformer.
+    Influenced by wav2vec 2.0 and BENDR.
 
     Args:
         convencoder: convolutional encoder model that yield signal representations
@@ -18,8 +19,6 @@ class ContrastiveSSL(nn.Module):
         mask_span:
         learning_rate:
         temp: temperature factor in contrastive loss (non-negative)
-        permuted_encodings:
-        permuted_contexts:
         enc_feat_l2:
         multi_gpu: invoke torch.nn.DataParallel
         l2_weight_decay:
@@ -35,8 +34,6 @@ class ContrastiveSSL(nn.Module):
         mask_rate: float = 0.1,
         mask_span: int = 6,
         temp: float = 0.5,
-        permuted_encodings: bool = False,
-        permuted_contexts: bool = False,
         enc_feat_l2: float = 0.001,
         multi_gpu: bool = False,
         unmasked_negative_frac: float = 0.25,
@@ -51,8 +48,6 @@ class ContrastiveSSL(nn.Module):
         self.mask_rate = mask_rate
         self.mask_span = mask_span
         self.temp = temp
-        self.permuted_encodings = permuted_encodings
-        self.permuted_contexts = permuted_contexts
         self.beta = enc_feat_l2
         self.start_token = getattr(transformer, "start_token", None)
         self.unmasked_negative_frac = unmasked_negative_frac
@@ -83,21 +78,21 @@ class ContrastiveSSL(nn.Module):
 
     def _generate_negatives(self, z):
         """Generate negative samples to compare each sequence location against"""
-        batch_size, feat, full_len = z.shape
-        z_k = z.permute([0, 2, 1]).reshape(-1, feat)
-        negative_inds = torch.empty(batch_size, full_len, self.num_negatives).long()
-        ind_weights = torch.ones(full_len, full_len) - torch.eye(full_len)
+        N, C, L = z.shape
+        z_k = z.permute([0, 2, 1]).reshape(-1, C)
+        negative_inds = torch.empty(N, L, self.num_negatives).long()
+        ind_weights = torch.ones(L, L) - torch.eye(L)
         with torch.no_grad():
-            # candidates = torch.arange(full_len).unsqueeze(-1).expand(-1, self.num_negatives).flatten()
-            for i in range(batch_size):
+            # candidates = torch.arange(L).unsqueeze(-1).expand(-1, self.num_negatives).flatten()
+            for i in range(N):
                 negative_inds[i] = (
-                    torch.multinomial(ind_weights, self.num_negatives) + i * full_len
+                    torch.multinomial(ind_weights, self.num_negatives) + i * L
                 )
             # From wav2vec 2.0 implementation, I don't understand
             # negative_inds[negative_inds >= candidates] += 1
 
         z_k = z_k[negative_inds.view(-1)].view(
-            batch_size, full_len, self.num_negatives, feat
+            N, L, self.num_negatives, C
         )
         return z_k, negative_inds
 
@@ -116,30 +111,30 @@ class ContrastiveSSL(nn.Module):
         return logits.view(-1, logits.shape[-1])
 
     def forward(self, *inputs):
+
         z = self.convencoder(inputs[0])
-
-        if self.permuted_encodings:
-            z = z.permute([1, 2, 0])
-
         unmasked_z = z.clone()
 
-        batch_size, feat, samples = z.shape
+        N, C, L = z.shape
+        # fmt: off
+        import ipdb; ipdb.set_trace(context=30)  # noqa
+        # fmt: on
 
-        if self._training:
+        if self.training:
             mask = make_mask(
-                (batch_size, samples), self.mask_rate, samples, self.mask_span
+                (N, L), self.mask_rate, L, self.mask_span
             )
         else:
             mask = torch.zeros(
-                (batch_size, samples), requires_grad=False, dtype=torch.bool
+                (N, L), requires_grad=False, dtype=torch.bool
             )
-            half_avg_num_seeds = max(1, int(samples * self.mask_rate * 0.5))
-            if samples <= self.mask_span * half_avg_num_seeds:
+            half_avg_num_seeds = max(1, int(L * self.mask_rate * 0.5))
+            if L <= self.mask_span * half_avg_num_seeds:
                 raise ValueError("Masking the entire span, pointless.")
             mask[
                 :,
                 _make_span_from_seeds(
-                    (samples // half_avg_num_seeds)
+                    (L // half_avg_num_seeds)
                     * np.arange(half_avg_num_seeds).astype(int),
                     self.mask_span,
                 ),
@@ -182,3 +177,4 @@ if __name__ == "__main__":
     model = ContrastiveSSL(encoder, tx)
     print(encoder.info(int(1e3)))
     print(model.info(int(1e3)))
+    print(model(torch.randn(2, 1, 1000)))

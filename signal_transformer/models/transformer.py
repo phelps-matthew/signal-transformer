@@ -20,9 +20,9 @@ class Transformer(nn.Module):
     def __init__(
         self,
         in_features: int,
-        hidden_feedforward: int = 3076,
         heads: int = 8,
         layers: int = 8,
+        hidden_feedforward: int = 3076,
         dropout: float = 0.15,
         activation: str = "gelu",
         position_encoder: int = 25,
@@ -37,10 +37,10 @@ class Transformer(nn.Module):
         """
         Args:
             in_features: dimension of single sample input feature vector
-            hidden_feedforward: dimension of fc layers in transformer encoder
             heads: number of transformer encoder heads
             layers: number of transformer encoder blocks
-            dropout: dropout probability as applied to transformer encoder, and input conditioning
+            hidden_feedforward: dimension of fc layers in transformer encoder
+            dropout: dropout probability as applied to transformer encoder and input conditioning
             activation: activate unit in transformer encoder layer
             position_encoder: group conv kernel size in positional encoding; zero to disable
             layer_drop: probability of dropping any individual layer within transformer encoder
@@ -113,7 +113,7 @@ class Transformer(nn.Module):
         # downsample to dim = in_features using 1x1 conv
         self.output_layer = nn.Conv1d(self._transformer_dim, in_features, 1)
 
-        # initialize transformer fc layers according to T-fixup
+        # initialize transformer linear layers according to T-fixup
         self.apply(self.init_linears)
 
     def init_linears(self, module):
@@ -142,6 +142,7 @@ class Transformer(nn.Module):
         # given token mask, fill masked sequence tokens with learnable masked token
         if mask_t is not None:
             x.transpose(2, 1)[mask_t] = self.mask_replacement
+
         # given channel mask, zero out channels
         if mask_c is not None:
             x[mask_c] = 0

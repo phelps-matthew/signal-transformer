@@ -74,8 +74,8 @@ class ConvEncoder(nn.Module):
             )
 
     def info(self, sequence_len=None, sample_freq=None):
-        """Return information regarding receptive field, downsample rate,
-        sample overlap, and number of encoded samples per trial."""
+        """Return information regarding receptive field, downsample rate, sample
+        overlap, and number of encoded samples per trial."""
         # recursion relation for receptive field, see
         # https://distill.pub/2019/computing-receptive-fields/
         kernel_sizes = list(reversed(self.kernel_sizes))
