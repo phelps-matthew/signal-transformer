@@ -6,3 +6,4 @@
 ** Finding appropriate downsampling factor. Must avoid divergent loss and not simply memorize/overfit
 * Initialization scheme (commmented out in BENDER)
 * Use of x.clone() in official BENDER as workaround for multi-gpu
+* L2 weight decay used in bendingcollegewav2vec
