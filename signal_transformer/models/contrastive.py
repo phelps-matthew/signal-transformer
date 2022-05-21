@@ -208,15 +208,16 @@ class ContrastiveSSL(nn.Module):
         z = self.convencoder(x)
         unmasked_z = z.clone()
         N, C, L = z.shape
+        # compute masks, using half maks rate and even spacing for eval
         if self.training:
             mask = make_mask((N, L), self.mask_rate, L, self.mask_span)
-        # during eval, use half the mask rate and evenly space masks
         else:
             mask = self._make_eval_mask((N, L))
+        # pass feature vectors and masks into transformer
         c = self.transformer(z, mask)
         # generate negative distractors for each transformed token
         negatives, _ = self.sample_negatives(unmasked_z)
-        # calculate cosine similarity between transfored features and
+        # calculate cosine similarity between transformed features and
         # distractors as logits (i.e. inputs into softmax-like loss)
         logits = self.compute_logits(unmasked_z, c, negatives)
         return logits, unmasked_z, mask, c
