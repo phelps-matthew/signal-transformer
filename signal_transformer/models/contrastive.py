@@ -1,4 +1,8 @@
-from signal_transformer.utils import make_mask, _make_span_from_seeds
+from signal_transformer.utils import (
+    make_mask,
+    _make_span_from_seeds,
+    compute_mask_indices,
+)
 from typing import Callable, Optional, Union
 
 import numpy as np
@@ -19,9 +23,9 @@ class ContrastiveSSL(nn.Module):
         mask_span:
         learning_rate:
         temp: temperature factor in contrastive loss (non-negative)
-        enc_feat_l2:
+        l2_activation_convencoder: factor applied to convencoder regularizer, computed as
+            mean squared activation penalty
         multi_gpu: invoke torch.nn.DataParallel
-        l2_weight_decay:
         unmasked_negative_frac:
         encoder_grad_frac:
         num_negatives: number of distractors uniformly sampled from input sequence
@@ -76,58 +80,92 @@ class ContrastiveSSL(nn.Module):
         )
         return desc
 
-    def _generate_negatives(self, z):
-        """Generate negative samples to compare each sequence location against"""
+    @staticmethod
+    def mask_pct(mask):
+        """mask coming from forward output"""
+        return mask.float().mean().item()
+
+    def generate_negatives(self, z):
+        """Generate negative samples to compare each sequence location against.
+
+        Returns:
+            torch.float32 of shape (N, L, n_negatives, C)
+        """
         N, C, L = z.shape
+        # flatten over features (channels) and batch size
         z_k = z.permute([0, 2, 1]).reshape(-1, C)
+        # intialize index tensor
         negative_inds = torch.empty(N, L, self.num_negatives).long()
+        # create tensor of ones, with zero diagonal. this permits us to exclude the self
+        # token (it is explicitly used in calculate similarity)
         ind_weights = torch.ones(L, L) - torch.eye(L)
+        # for each batch, randomly sample non-negative elements from rows of ind_weights.
+        # we add i * L to get proper indices when we reshape below
         with torch.no_grad():
-            # candidates = torch.arange(L).unsqueeze(-1).expand(-1, self.num_negatives).flatten()
             for i in range(N):
                 negative_inds[i] = (
                     torch.multinomial(ind_weights, self.num_negatives) + i * L
                 )
-            # From wav2vec 2.0 implementation, I don't understand
-            # negative_inds[negative_inds >= candidates] += 1
 
-        z_k = z_k[negative_inds.view(-1)].view(
-            N, L, self.num_negatives, C
-        )
+        # evaluate z_k at negative indices, and reshape to desired output
+        z_k = z_k[negative_inds.view(-1)].view(N, L, self.num_negatives, C)
         return z_k, negative_inds
 
-    def _calculate_similarity(self, z, c, negatives):
+    def calculate_similarity(self, z, c, negatives):
+        """
+        Args:
+            z: unmasked feature vector sequence (N, C, L)
+            c: transformer output feature vector sequence (N, C, L+1)
+            negatives: (N, L, n_negatives, C)
+
+        Returns:
+            torch.float32 of shape (N * L, n_negatives + 1)
+        """
+        # remove start token, permute and add dimension. z and c have shape (N, L, 1, C)
         c = c[..., 1:].permute([0, 2, 1]).unsqueeze(-2)
         z = z.permute([0, 2, 1]).unsqueeze(-2)
 
         # In case the contextualizer matches exactly, need to avoid divide by zero errors
+        # broadcast c, compute equivalence of entire feature vector (dim=-1) matching
         negative_in_target = (c == negatives).all(-1)
+
+        # add current (self) token to list of distractors, (N, L, n_negatives + 1, C)
         targets = torch.cat([z, negatives], dim=-2)
 
+        # compute cosine similarity between c and all distractors, (N, L, n_negatives + 1)
         logits = F.cosine_similarity(c, targets, dim=-1) / self.temp
+        # ignoring self token, replace all exact matches with -inf so as to not contribute
+        # to constastive loss denominator
         if negative_in_target.any():
-            logits[1:][negative_in_target] = float("-inf")
+            logits[:, :, 1:][negative_in_target] = float("-inf")
 
         return logits.view(-1, logits.shape[-1])
 
-    def forward(self, *inputs):
+    @staticmethod
+    def contrastive_accuracy(logits):
+        labels = torch.zeros(logits, device=logits.device, dtype=torch.long)
+        # return StandardClassification._simple_accuracy([labels], logits)
+        return labels
 
-        z = self.convencoder(inputs[0])
+    def calculate_loss(self, logits, unmasked_z):
+        # The 0'th index is the correct position
+        labels = torch.zeros(logits.shape, device=logits.device, dtype=torch.long)
+        # Note that loss_fn here integrates the softmax as per the normal classification
+        # pipeline (leveraging logsumexp)
+        l2_activation_loss = self.beta * unmasked_z.pow(2).mean()
+        return self.loss_fn(logits, labels) + l2_activation_loss
+
+    def forward(self, x):
+        z = self.convencoder(x)
         unmasked_z = z.clone()
 
         N, C, L = z.shape
-        # fmt: off
-        import ipdb; ipdb.set_trace(context=30)  # noqa
-        # fmt: on
 
         if self.training:
-            mask = make_mask(
-                (N, L), self.mask_rate, L, self.mask_span
-            )
+            mask = make_mask((N, L), self.mask_rate, L, self.mask_span)
+        # during eval, use half the mask rate and evenly space masks
         else:
-            mask = torch.zeros(
-                (N, L), requires_grad=False, dtype=torch.bool
-            )
+            mask = torch.zeros((N, L), requires_grad=False, dtype=torch.bool)
             half_avg_num_seeds = max(1, int(L * self.mask_rate * 0.5))
             if L <= self.mask_span * half_avg_num_seeds:
                 raise ValueError("Masking the entire span, pointless.")
@@ -142,31 +180,17 @@ class ContrastiveSSL(nn.Module):
 
         c = self.transformer(z, mask)
 
-        # Select negative candidates and generate labels for which are correct labels
-        negatives, negative_inds = self._generate_negatives(unmasked_z)
+        # generate negative distractors for each transformed token
+        negatives, _ = self.generate_negatives(unmasked_z)
 
-        # Prediction -> batch_size x predict_length x predict_length
-        logits = self._calculate_similarity(unmasked_z, c, negatives)
+        # calculate cosine similarity between transfored features and 
+        # distractors as logits (i.e. inputs into softmax-like loss)
+        logits = self.calculate_similarity(unmasked_z, c, negatives)
+        # fmt: off
+        import ipdb; ipdb.set_trace(context=30)  # noqa
+        # fmt: on
+        self.calculate_loss(logits, unmasked_z)
         return logits, unmasked_z, mask, c
-
-    @staticmethod
-    def _mask_pct(inputs, outputs):
-        return outputs[2].float().mean().item()
-
-    @staticmethod
-    def contrastive_accuracy(inputs, outputs):
-        logits = outputs[0]
-        labels = torch.zeros(logits.shape[0], device=logits.device, dtype=torch.long)
-        # return StandardClassification._simple_accuracy([labels], logits)
-        return labels
-
-    def calculate_loss(self, inputs, outputs):
-        logits = outputs[0]
-        # The 0'th index is the correct position
-        labels = torch.zeros(logits.shape[0], device=logits.device, dtype=torch.long)
-        # Note that loss_fn here integrates the softmax as per the normal classification
-        # pipeline (leveraging logsumexp)
-        return self.loss_fn(logits, labels) + self.beta * outputs[1].pow(2).mean()
 
 
 if __name__ == "__main__":
@@ -174,7 +198,9 @@ if __name__ == "__main__":
 
     encoder = ConvEncoder(1)
     tx = Transformer(512)
-    model = ContrastiveSSL(encoder, tx)
-    print(encoder.info(int(1e3)))
-    print(model.info(int(1e3)))
-    print(model(torch.randn(2, 1, 1000)))
+    model = ContrastiveSSL(encoder, tx, num_negatives=5, mask_rate=0.01, mask_span=5)
+    model.eval()
+    L = int(96 * 1e3)
+    print(encoder.info(L))
+    print(model.info(L))
+    print(model(torch.randn(2, 1, L)))
