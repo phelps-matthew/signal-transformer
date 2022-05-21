@@ -204,6 +204,7 @@ class ContrastiveSSL(nn.Module):
         return self.beta * unmasked_z.pow(2).mean()
 
     def forward(self, x):
+        """Transform raw input signals to negative-distractor-logits"""
         # forward raw signal inputs through convencoder to form feature vectors
         z = self.convencoder(x)
         unmasked_z = z.clone()
