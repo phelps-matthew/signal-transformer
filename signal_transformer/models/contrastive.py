@@ -13,21 +13,22 @@ import torch.nn.functional as F
 
 class ContrastiveSSL(nn.Module):
     """
-    Implements contrastive semi-supervised learning. Convencoder generates base feature
-    vectors (tokens) and transformer attention provides contexualization.
+    Implements contrastive semi-supervised learning (pretraining).
 
     Influenced by wav2vec 2.0 and BENDR.
 
     Args:
-        convencoder: convolutional encoder model that yield signal representations
-        transformer: transformer model applying MHSA to conencoder inputs
+        convencoder: convolutional encoder model yielding base signal feature vectors
+        transformer: transformer model, MHSA provides contexualization among feature
+            vectors
         mask_rate: probability of token lying at beginning of contiguous mask
         mask_span: token span of a contiguous mask
         temp: temperature divisor in cosine similarity loss (non-negative)
         l2_feature_encoder: regularization multiplicand applied to convencoder
             regularizer, computed as mean squared activation penalty
         multi_gpu: invoke torch.nn.DataParallel
-        num_negatives: number of distractors uniformly sampled from feature sequence
+        num_negatives: number of distractors uniformly sampled from tokenized sequence.
+            distractors are sampled for each token independently
         encoder_grad_frac: gradient supression in convencoder
     """
 
