@@ -1,14 +1,11 @@
-from signal_transformer.utils import (
-    make_mask,
-    _make_span_from_seeds,
-    compute_mask_indices,
-)
-from typing import Callable, Optional, Union
+from typing import Callable, Tuple
 
 import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+from signal_transformer.utils import _make_span_from_seeds, make_mask
 
 
 class ContrastiveSSL(nn.Module):
@@ -69,7 +66,7 @@ class ContrastiveSSL(nn.Module):
                 )
             )
 
-    def _make_eval_mask(self, shape):
+    def _make_eval_mask(self, shape: Tuple[int, int]) -> torch.Tensor:
         """Create evenly spaced mask spans based on half of training mask rate.
         Ugly, refactor?
 
@@ -88,7 +85,7 @@ class ContrastiveSSL(nn.Module):
         mask[:, mask_indices] = True
         return mask
 
-    def info(self, sequence_len):
+    def info(self, sequence_len: int) -> str:
         """Return information string regarding mask span, rate, and expectation of total
         masked elements.
         """
@@ -101,7 +98,7 @@ class ContrastiveSSL(nn.Module):
         )
         return desc
 
-    def sample_negatives(self, z):
+    def sample_negatives(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Generate negative samples to compare each sequence location against.
 
         Args:
@@ -130,7 +127,9 @@ class ContrastiveSSL(nn.Module):
         z_k = z_k[negative_inds.view(-1)].view(N, L, self.num_negatives, C)
         return z_k, negative_inds
 
-    def compute_logits(self, z, c, negatives):
+    def compute_logits(
+        self, z: torch.Tensor, c: torch.Tensor, negatives: torch.Tensor
+    ) -> torch.Tensor:
         """
         Compute logits of feature vector and distractors using cosine similarity.
 
@@ -165,7 +164,7 @@ class ContrastiveSSL(nn.Module):
         return logits.view(-1, logits.shape[-1])
 
     @staticmethod
-    def contrastive_accuracy(logits):
+    def contrastive_accuracy(logits: torch.Tensor) -> float:
         """
         Compute accuracy of highest logit scores of transformed features matching
         encoded feature vectors.
@@ -180,21 +179,21 @@ class ContrastiveSSL(nn.Module):
         accuracy = preds.eq(targets).float().mean().item()
         return accuracy
 
-    def contrastive_loss(self, logits):
-        """Calculate crossentropy + L2 feature activation loss
+    def contrastive_loss(self, logits: torch.Tensor) -> torch.Tensor:
+        """Calculate crossentropy using logits from negative distractors.
 
         Args:
             logits: cosine similarity outputs, (N * L, n_negatives + 1)
         Returns:
             torch.tensor scalar (torch.float32)
         """
-        # Why use long instead of int?
+        # why use long instead of int?
         targets = torch.zeros(logits.shape[0], device=logits.device, dtype=torch.long)
-        # CrossEntropyLoss applies log(softmax) internally
+        # `CrossEntropyLoss` applies log(softmax) internally
         contrastive_loss = self.loss_fn(logits, targets)
         return contrastive_loss
 
-    def feature_activation_loss(self, unmasked_z):
+    def feature_activation_loss(self, unmasked_z: torch.Tensor) -> torch.Tensor:
         """Compute L2 feature activation loss (from convencoder)
 
         Args:
@@ -205,6 +204,7 @@ class ContrastiveSSL(nn.Module):
         return self.beta * unmasked_z.pow(2).mean()
 
     def forward(self, x):
+        # forward raw signal inputs through convencoder to form feature vectors
         z = self.convencoder(x)
         unmasked_z = z.clone()
         N, C, L = z.shape
